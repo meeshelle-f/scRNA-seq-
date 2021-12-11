@@ -1,0 +1,202 @@
+---
+title: "CaSpER-GSE158802"
+author: "Michelle"
+date: "12/11/2021"
+output: html_document
+---
+
+Upload GV dataset, remove ENSEMBLE IDs/ convert to gene symbol, which CaSpER accepts.
+
+Requires:
+
+From GSE158802, Raw_GV file
+
+If already have prepped file where rows are gene symbols and columns are cell names move to chunk 2 and upload file that will be Seurat Object or Summarized Experiment. 
+
+Chunk 1 GOAL: Create CaSpER_GV file format with two mock cells, called MOCK_DATA
+Upload raw_GV 
+Drop 5 cells with low counts 
+Mock cell 1 has 1.5* chr8 
+Mock cell 2 has 1.5* chr21 
+
+
+```{R, prepare data to create Seurat Object} 
+#compare dims 
+
+raw_GV <- read.csv("~/GitHub/scSeq/CaSpER_GV_12.1.21",row.names=1)
+dim(raw_GV) #60668    40
+
+
+drops <- c("P3432_224","P3432_232","P3432_260","P3432_270","P3432_251")
+GV=raw_GV[ , !(names(raw_GV)%in% drops)]
+
+###### 
+MOCK_DATA=GV
+
+
+#####
+chr8= ANNOTATION[ANNOTATION$Chr==c("8"),] #list of genes on chr8
+antichr8= ANNOTATION[!(ANNOTATION$Chr==c("8")),] #list of genes not on chr8 
+
+temp=data.frame(cbind(GV[,"P3432_193"],GV[,"P3432_196"]), row.names = rownames(GV))
+
+TEMP=rbind(1.5*temp[(rownames(temp)%in% chr8$Gene),],temp[!((rownames(temp)%in% chr8$Gene)),])
+names(TEMP)=c("P3432_193_MOCK_chr8","X2")
+
+TEMP.M=match(rownames(MOCK_DATA),rownames(TEMP)) # reorder second to match first 
+
+TEMP.1=TEMP[TEMP.M,]#reorder second to match first 
+
+MOCK_DATA$MOCK_P3432_193_chr8=TEMP.1[,1]
+
+#######
+
+chr21= ANNOTATION[ANNOTATION$Chr==c("21"),] #list of genes on chr8
+antichr21= ANNOTATION[!(ANNOTATION$Chr==c("21")),] #list of genes not on chr8 
+
+temp=data.frame(cbind(GV[,"P3432_193"],GV[,"P3432_196"]), row.names = rownames(GV))
+
+TEMP=rbind(1.5*temp[(rownames(temp)%in% chr21$Gene),],temp[!((rownames(temp)%in% chr21$Gene)),])
+names(TEMP)=c("X1","P3432_196_MOCK_chr21")
+
+TEMP.M=match(rownames(MOCK_DATA),rownames(TEMP)) # reorder second to match first 
+
+TEMP.1=TEMP[TEMP.M,]#reorder second to match first 
+
+MOCK_DATA$MOCK_P3432_196_chr21=TEMP.1[,2]
+
+########
+
+write.csv(MOCK_DATA,file="~/GitHub/scSeq/MOCK_DATA_12.9.21.csv",row.names=T)
+
+
+```
+
+Chunk 2 GOAL: Create & normalize Seurat Object., scale matrix to create GV_log.ge
+Upload MOCK_DATA, create SeuratObject.
+Perform normalization
+Extract GV_log.ge <- as.matrix(GV@assays$RNA@data)
+
+2 known ways to create SeuratObject: 1) Seurat* 2) summarized experiment  
+
+
+```{R, upload MOCK DATA create SeuratObject}
+
+library(BiocManager)
+library(devtools)
+library(remotes)
+library(CaSpER)
+library(patchwork)
+library(dplyr)
+
+MOCK_DATA_12.9.21 <- read.csv("~/GitHub/scSeq/MOCK_DATA_12.9.21.csv", row.names=1)
+
+GV=CreateSeuratObject(counts=MOCK_DATA_12.9.21[,-1]) # down to 35 names/cells
+
+GV[["percent.mt"]] <- PercentageFeatureSet(GV, pattern = "^MT-")
+
+
+VlnPlot(GV, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+plot2 <- FeatureScatter(GV, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+
+plot2 #.76
+
+#GV <- subset(GV, subset = nFeature_RNA > 200 & nFeature_RNA < 2500 & percent.mt < 5)
+#plot2 <- FeatureScatter(GV, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+#plot2 #.81, better, but only kept 4 cells lol. 
+
+GV <- NormalizeData(GV , scale.factor = 1e6, normalization.method = "RC")
+
+GV <- FindVariableFeatures(GV, do.plot = T, nfeatures = 1000) 
+#pull top 1000 features based on mean-variance 
+
+GV <- ScaleData(GV) 
+#use linear transformation prior to PCA, mean and var =0 across cells 
+
+GV <- RunPCA(GV, features = VariableFeatures(object = GV),npcs = 10) 
+#have to change ncps (components) to be less than the smallest dimension of the dataset lol
+
+
+GV <- FindNeighbors(GV, dims = 1:10)
+
+GV <- FindClusters(GV, resolution = 0.5)
+
+GV <- RunTSNE(GV, dims.use = 1:10,perplexity=10) 
+#only works when perplexity is set to 2-10....
+
+DimPlot(GV, reduction = "tsne",label=T)
+
+FeaturePlot(GV, features = c("BARD1", "RBL2", "RBBP7", "BUB3", "BUB1B"))
+
+
+#now that the SeuratObject has been created, normalized, it is now prepared and ready to be exported as a matrix that will be used to create our CaSpER object in the next chunk. 
+
+GV_log.ge <- as.matrix(GV@assays$RNA@data) 
+
+GENES <- rownames(GV_log.ge)
+
+ANNOTATION <- generateAnnotation(id_type="hgnc_symbol", genes=GENES,ishg19=T, centromere=centromere)
+
+GV_log.ge <- GV_log.ge[match( ANNOTATION$Gene,rownames(GV_log.ge)) , ] 
+#match by original hgnc.symbol
+
+rownames(GV_log.ge) <- ANNOTATION$Gene
+
+GV_log.ge <- log2(GV_log.ge +1)
+
+write.csv(GV_log.ge,file="~/GitHub/scSeq/GV_log.ge_V2.csv",row.names=T)
+
+
+```
+
+CHUNK 3 GOALS: Prepare to create CaSpER object. 
+Upload GV_log.ge_V2
+Uplod hg19_cytoband info (general)
+Upload maf.rda (altered to be generally used)
+Create control data set (altered to be generally used)
+
+
+```{R,}
+
+GV_log.ge_V2 <- read.csv("~/GitHub/scSeq/GV_log.ge_V2.csv", row.names=1)
+
+CONTROL.GV <- colnames(GV_log.ge[,1:35]) #Use all cells except mock cells [,36:37]
+
+data("hg19_cytoband")
+
+load("~/CaSpER/maf.rda") #will have to use their BAF data since we don't have any.  
+
+maf$baf=.5  #as long as consistent wont alter shift results
+maf$dev=0 #as long as consistent wont alter shift results
+
+loh<- list()
+loh[[1]] <- maf
+head(loh[[1]]) 
+colnames(loh[[1]]) # "chr" "position" "alt" "ref"  "coverage" "baf" "dev"    
+
+names(loh) <- "GV"
+loh.name.mapping <- data.frame (loh.name= "GV" , sample.name=colnames(GV_log.ge)) 
+
+OBJECT.GV <- CreateCasperObject(raw.data=GV_log.ge,  loh.name.mapping=loh.name.mapping,   sequencing.type="single-cell", 
+cnv.scale=3,   loh.scale=3, expr.cutoff=0.1, filter="median", matrix.type="normalized",
+annotation=ANNOTATION, method="iterative", loh=loh, 
+control.sample.ids=CONTROL.GV, cytoband=cytoband)
+
+FINAL.OBJECTS_GV <- runCaSpER(OBJECT.GV, removeCentromere=T, cytoband=cytoband, method="iterative")
+
+FINALChrMat_GV <- extractLargeScaleEvents (FINAL.OBJECTS_GV, thr=0.75) 
+
+OBJ <- FINAL.OBJECTS_GV[[9]]
+
+
+plotLargeScaleEvent (object=OBJ, fileName="MOCK_GV_large.scale.events_BAFdev0.png") 
+
+plotBAFAllSamples (loh = OBJ@loh.median.filtered.data,  fileName="MOCK_GV_LOHAllSamples.png") 
+
+```
+
+
+
+
+
