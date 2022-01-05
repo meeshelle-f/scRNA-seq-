@@ -1,0 +1,316 @@
+title: "CaSpER algorithm applied to Single cell RNA sequencing of multiple myeloma II"
+output: html_document
+---
+n = 947 single cells
+Supplementary Figs. 23–25, Supplementary Notes 7 and 8).
+
+
+https://github.com/akdess/CaSpER
+Use the 5) 10x Single-cell RNA-Seq dataset R code
+https://github.com/akdess/CaSpER/blob/master/demo/MM135_10X.R
+
+https://www.ncbi.nlm.nih.gov//geo/query/acc.cgi?acc=GSE110499
+Download:
+1)GSE110499_GEO_processed_MM_10X_raw_UMI_count_martix.txt.gz	
+
+
+```{R, upload GSE110499_UMI_count_matrix}
+
+counts  <- read.delim("~/CaSpER/GSE110499_GEO_processed_MM_10X_raw_UMI_count_martix.txt.gz", stringsAsFactor=F, header=T)
+
+rownames(counts) <- counts[, 1] 
+counts <- counts[, -1]
+
+dim(counts) #33694  1339
+
+#cols are UMIs
+#row names are names  
+
+```
+
+
+Goals: 
+1)create seurat object, apply basic filtering to remove unwanted cells 
+2)apply global scaling normalization to Seurat object 
+3) create log.ge
+
+```{R, use Seurat object}
+
+library(Seurat)
+library(SeuratObject)
+
+mm135 <- CreateSeuratObject(counts = counts, project = "mm135", min.cells = 3, min.features = 
+200)
+
+mm135[["percent.mt"]] <- PercentageFeatureSet(mm135, pattern = "^MT-")
+
+mm135 <- subset(mm135, subset = nFeature_RNA > 200 & nFeature_RNA < 2500 & percent.mt < 5)
+#filter out cells w/ > 5% mitochondrial counts 
+
+mm135 <- NormalizeData(mm135 , scale.factor = 1e6, normalization.method = "RC")
+#RC is 1/3 ways to globally normalize data, stands for relative counts. Generates counts per million (CPM) when set to scale.factor=1e6 
+
+mm135 <- FindVariableFeatures(mm135, do.plot = T, nfeatures = 1000) #pull top 1000 features based on mean-variance 
+
+mm135 <- ScaleData(mm135) #use linear transformation prior to PCA, mean and var =0 across cells 
+
+mm135 <- RunPCA(mm135, features = VariableFeatures(object = mm135),npcs = 100)
+
+mm135 <- RunTSNE(mm135, dims.use = 1:10) #RunTSNE uses input seurat object 
+mm135$seurat_clusters #7 levels
+mm135$seurat_clusters[2]
+
+DimPlot(mm135, reduction = "tsne")
+
+
+FeaturePlot(mm135, features = c("SDC1", "CD38"))
+
+X=FeaturePlot(mm135, features = c("SDC1", "CD38"))
+
+X2<- names(Idents(mm135) )[Idents(mm135) %in% c(2)] #pulls out 135 
+
+XX=rbind(log.ge['SDC1',],log.ge['CD38',])
+row.names(XX)=c("SDC1","CD38")
+XX=data.frame(XX)
+
+XX[,colnames(XX)=="TTGGCAAGTACAGCAG"]
+XX[,colnames(XX)==X2[3]]
+XX[,colnames(XX)==X2]
+
+X2=data.frame(X2)
+new=intersect(XX[,colnames(XX)==X2])
+CONTROL=XX[,control]
+NOTCONTROL=XX[,!(CONTROL)]
+
+CvsNC=rbind(rowMeans(CONTROL),rowMeans(NOTCONTROL))
+rownames(CvsNC)=c("CONTROL_tSNE_2,7","not_CONTROL_tSNE_1,3:6")
+
+
+mm135 <- FindNeighbors(mm135, dims = 1:10)
+mm135 <- FindClusters(mm135, resolution = 0.5)
+DimPlot(mm135, reduction = "tsne", label=T)
+
+
+log.ge <- as.matrix(mm135@assays$RNA@data) # results from scale data are stored here 
+
+```
+
+Goals:
+1)use generateAnnotation on log.ge to pull hgnc.symbol and create 'annotation' including cytoband
+2) log2(log.ge+1) normalize
+3) Create loh.name.mapping (contains 947 UMIs in DF)
+4) CreateCasperObject from loh.name.mapping, annotation, log.ge, loh, cytoband ,control... 
+
+```{R, annotate log.ge}
+
+dim(log.ge) #15301   947, where rows still appear to be genes and cols are UMIs
+
+AAACCTGTCAAACGGG represents a cell barcode, shown as a unique nucleic aid sequence so that individual cells can be tracked. M 
+
+##A small number of cells from patient MGH31 was shown in the original publication to be normal cells (oligodendrocytes) (Supplementary Fig. 11).
+
+
+Idents(mm135) #contains 0-7 levels based on tSNE... 
+names(Idents(mm135))
+length(Idents(mm135)) #947 represents the number of total cells 
+length(unique(Idents(mm135))) 
+
+Idents(mm135) %in% c(2,7)
+
+X01 <- names(Idents(mm135) )[Idents(mm135) %in% c(0:1)] #pulls out 406
+X36<- names(Idents(mm135) )[Idents(mm135) %in% c(3:6)] #pulls out 367  
+X8<- names(Idents(mm135) )[Idents(mm135) %in% c(8)] #pulls out 0 cells 
+
+X2<- names(Idents(mm135) )[Idents(mm135) %in% c(2)] #pulls out 135 
+X7<- names(Idents(mm135) )[Idents(mm135) %in% c(7)] #pulls out 39 
+
+(406+367)+174 #= 947 lol 
+
+control <- names(Idents(mm135) )[Idents(mm135) %in% c(2,7)] #pulls out 174 unique cells that are control apparently...  
+
+length(names(Idents(mm135))) #947
+mm135$seurat_clusters #there are a total of 8 levels, but why are we ignoring 0 and 1 ?...at least on the dimplot ^ groups 0 and 1 do appear to be the closest to 0 (aka least important / at 0? )
+    
+#if (!requireNamespace("BiocManager", quietly = TRUE))
+#    install.packages("BiocManager")
+#BiocManager::install(version = "3.14")
+
+library(BiocManager)
+#BiocManager::install(c('HMMcopy', 'GenomeGraphs', 'biomaRt', 'limma', 'GO.db', 'org.Hs.eg.db', 'GOstats'))
+ 
+ #install.packages("devtools")
+
+ library(devtools)
+# require(devtools)
+# install.packages("CaSpER")
+
+ 
+#install.packages("remotes")
+library(remotes)
+#remotes::install_github("akdess/CaSpER")
+library(CaSpER)
+
+data("hg19_cytoband")
+#Human reference GRCh37/hg19 cytoband file from UCSC Genome Browser
+
+# format includes a matrix containg the cytoband coordinates with bins, in rows from j..n and cellIDs, in columns from i..n
+
+
+genes <- rownames(log.ge)
+
+
+library(Seurat)
+library(biomaRt)
+
+#cytoband <- read.delim("C:/Users/Michelle/Downloads/cytoBand.txt.gz", header=FALSE)
+
+#kable(cytoband[1:5, ])
+
+annotation <- generateAnnotation(id_type="hgnc_symbol", genes=genes,ishg19=T, centromere=centromere)
+
+log.ge <- log.ge[match( annotation$Gene,rownames(log.ge)) , ] #match by original hgnc.symbol
+rownames(log.ge) <- annotation$Gene
+
+log.ge <- log2(log.ge +1)
+#log2 is commonly used to normalize counts: 
+log2(100) #6.643856 (higher) vs: 
+log10(100) #2  (lower) 
+
+# go to / download/ move .rda file into CaSpER file in folder from: https://github.com/akdess/CaSpER/blob/master/data/maf.rda
+load("maf.rda") #then this link will work 
+
+
+loh<- list()
+loh[[1]] <- maf
+head(loh[[1]]) 
+colnames(loh[[1]]) # "chr" "position" "alt" "ref"  "coverage" "baf" "dev"    
+
+names(loh) <- "MM135"
+loh.name.mapping <- data.frame (loh.name= "MM135" , sample.name=colnames(log.ge)) 
+#l0h.name = col1name, sample.name = loh.name.mapping
+#create a data frame from a list 
+
+#################
+
+# loh.name.mapping contains the cell (sample) name and the matching baf signal sample name
+# cnv.scale represents maximum expression scale
+# loh.scale	represents maximum baf scale
+# loh represents the original baf signal
+# sequencing.type = bulk or single-cell
+# log.transformed = indicates if the data log2 transformed or not. (default:TRUE)
+# method = itereative or fixed analysis type (default: iterative)
+# annotation = DF containing gene positions along chr
+# control.sample.ids = vector containing the reference (normal) cell (sample) names
+# expr.cutoff = expression cutoff for lowly expressed genes
+
+
+
+#somehow this reduces the rows by 400... log.ge contains 11788 and this only contains 11474
+object <- CreateCasperObject(raw.data=log.ge,  loh.name.mapping=loh.name.mapping,   sequencing.type="single-cell", 
+cnv.scale=3,   loh.scale=3, expr.cutoff=0.1, filter="median", matrix.type="normalized",
+annotation=annotation, method="iterative", loh=loh, 
+control.sample.ids=control, cytoband=cytoband)
+
+
+#there are three lists within object@control.normalized... not sure what this means. 
+plot(density(as.vector(object@control.normalized[[3]])))
+#what is object@control.normalized[[3]]
+object@control.normalized[[3]] #normalized contains negative values...
+#LINC00115 
+#AAACCTGTCAAACGGG
+# -6.551724e-03
+
+object@raw.data #this and almost all other data contains 0s... 
+
+
+plot(density(log2(object@control.normalized.noiseRemoved[[3]]+1)))
+dev.off()
+
+save.image("~/CaSpER/11.28.21_CaSpER.RData")
+
+load("~/CaSpER/11.28.21_CaSpER.RData")
+
+```
+
+
+
+```{R, run CaSpER}
+## runCaSpER
+final.objects <- runCaSpER(object, removeCentromere=T, cytoband=cytoband, method="iterative")
+#performs pairwise comparisons to ensure a coherent set of CNV calls.. 1) performs recursive median filtering 2) performs HMM segmentation 3) 
+
+# contains 11788 genes across 947 samples...
+
+save.image("~/CaSpER/11.28.21_CaSpER.RData")
+
+## summarize large scale events 
+finalChrMat <- extractLargeScaleEvents (final.objects, thr=0.75) 
+
+obj <- final.objects[[9]]
+
+plotHeatmap10x(object=obj, fileName="heatmap.png",cnv.scale= 3, cluster_cols = F, cluster_rows = T, show_rownames = T, only_soi = T)
+
+#Using [ ] gives you a list with the selected components.
+#Using [[ ]] gives you the component itself.
+
+class(final.objects) # list
+names(final.objects)
+length(names(final.objects)) #9 
+
+names(final.objects[9]) # "3_vs_3"
+
+
+plotLargeScaleEvent (object=obj, fileName="large.scale.events.png") 
+
+plotBAFAllSamples (loh = obj@loh.median.filtered.data,  fileName="LOHAllSamples.png") 
+
+plotBAFOneSample (object, fileName="LOHPlotsAllScales.png") 
+
+F=finalChrMat
+F=finalChrMat[rowSums(finalChrMat[])>0,]
+FF=colSums(F)
+FF=data.frame(FF)
+
+FFF=data.frame(FF[order(FF,decreasing=FALSE)])
+
+write.table(FF,file="~/CaSpER/FF",sep="\t")
+
+F=finalChrMat[rowSums(finalChrMat[])>0,]
+heatmap(F)
+
+heatmap(object@loh.median.filtered.data)
+
+#### VISUALIZATION 
+chrMat <- finalChrMat
+plot.data <- melt(chrMat)
+plot.data$value2 <- "neutral"
+plot.data$value2[plot.data$value > 0] <- "amplification"
+plot.data$value2[plot.data$value < 0] <- "deletion"
+plot.data$value2 <- factor(plot.data$value2, levels = c("amplification", 
+    "deletion", "neutral"))
+
+plot.data$X2 <- factor(plot.data$X2, levels = colnames(chrMat)) #6
+
+p <- ggplot(aes(x = X2, y = X1, fill = value2), data = plot.data) + 
+    geom_tile(colour = "white", size = 0.01) + 
+    labs(x = "", 
+    y = "") + scale_fill_manual(values = c(amplification = muted("red"), 
+    deletion = muted("blue"), neutral = "white")) + theme_grey(base_size = 6) + 
+    theme(legend.position = "right", legend.direction = "vertical", 
+        legend.title = element_blank(), strip.text.x = element_blank(), 
+        legend.text = element_text(colour = "black", size = 7, 
+            face = "bold"), legend.key.height = grid::unit(0.8, 
+            "cm"), legend.key.width = grid::unit(0.5, "cm"), 
+        axis.text.x = element_text(size = 5, colour = "black", 
+            angle = -45, hjust = 0), axis.text.y = element_text(size = 6, 
+            vjust = 0.2, colour = "black"), axis.ticks = element_line(size = 0.4), 
+        plot.title = element_text(colour = "black", hjust = 0, 
+            size = 6, face = "bold"))
+
+save.image("~/CaSpER/11.28.21_CaSpER.RData")
+
+```
+
+1) upload processed TPM from GEO 
+2) run COR on both log.ge and the TPM... not sure if they will be the same. 3) discover why my heatmap doesn't look like a heatmap. 
+`
